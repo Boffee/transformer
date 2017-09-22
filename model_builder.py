@@ -32,13 +32,13 @@ def embed(sequences,
     """
     Embed the sequences and add positional encoding
     Args:
-        sequences: tensor of shape (batch_size, max_time_step) to embed.
-        vocab_size: int, embedding lookup size.
-        embed_size: int, embedding output size.
+        sequences: int tensor of shape (batch_size, max_time_step) mapped from token to index to embed.
+        vocab_size: int, embedding lookup size. Number of unique tokens that needs to be embedded.
+        embed_size: int, output embedding space size.
         scope: string, variable scope.
         reuse: Boolean, wheter to reuse the weights of the previous layers by the same name.
     Returns:
-        tensor of shape (batch_size, embed_size)
+        tensor of shape (batch_size, max_time_step, embed_size)
     """
     with tf.variable_scope(scope, reuse=reuse):
         embedded = embedding(sequences, vocab_size, embed_size=512)
@@ -58,9 +58,10 @@ def encode(src_embedded,
     Encode the embeded sequences for the decoder
     Args:
         src_embedded: tensor of shape (batch_size, max_time_step, embed_size) to encode.
-        masking_range: tuple specifying the masking range relative to the position of the query.
+        masking_range: tuple specifying the attention masking range relative to the position of the query.
             `None` maskes from the beginning and to the end for the first and second value respective.
             (1, None) maskes all future tokens from the querying position.
+            Swap the first and second value to mask everything outside of the range
         hidden_size: int, size of encoder hidden layers
         num_heads: int, number of heads for multihead attention
         num_devs: int, number of devices distribute the attentions heads on
@@ -93,14 +94,15 @@ def decode(src_encoded,
     Args:
         src_encoded: tensor of shape (batch_size, max_time_step, encoder_hidden_size) to decode
         tgt_embedded: tensor of shape (batch_size, max_time_step, embed_size) to decode
-        masking_range: tuple specifying the masking range relative to the position of the query.
+        masking_range: tuple specifying the attention masking range relative to the position of each query.
             `None` maskes from the beginning and to the end for the first and second value respective.
             (1, None) maskes all future tokens from the querying position.
+            Swap the first and second value to mask everything outside of the range
         hidden_size: int, size of encoder hidden layers
         num_heads: int, number of heads for multihead attention
         num_devs: int, number of devices distribute the attentions heads on
         scope: string, variable scope.
-        reuse: Boolean, wheter to reuse the weights of the previous layers by the same name.
+        reuse: Boolean, whether to reuse the weights of the previous layers by the same name.
     Returns:
         tensor of shape (batch_size, max_time_step, hidden_size)
     """
@@ -123,10 +125,11 @@ def project(src_decoded, tgt_size, scope="project", reuse=None):
         src_decoded: tensor of shape (batch_size, max_time_step, decoder_hidden_size) to project
         tgt_size: int, size of the target data space
     Returns:
-        tensor of shape (batch_size, max_time_step, tgt_size)
+        logit tensor of shape (batch_size, max_time_step, tgt_size)
+        predicted sequence int tensor of shape (batch_size, max_time_step)
     """
     with tf.variable_scope(scope, reuse=reuse):
         logits = tf.layers.dense(src_decoded, tgt_size)
-        preds = tf.to_int32(tf.argmax(logits, axis=-1))
+        pred_sequences = tf.to_int32(tf.argmax(logits, axis=-1))
         
-    return logits, preds
+    return logits, pred_sequences

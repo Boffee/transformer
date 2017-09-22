@@ -22,8 +22,15 @@ def stack_layers(initial_state, sublayers, num_layers=1, layer_scope_prefix="lay
     return transition_state
 
 def get_shape(tensor):
-  static_shape = tensor.shape.as_list()
-  dynamic_shape = tf.unstack(tf.shape(tensor))
-  dims = [s[1] if s[0] is None else s[0]
-          for s in zip(static_shape, dynamic_shape)]
-  return dims
+    """
+    Get the shape of the tensor
+    Args:
+        tensor: tensor to get shape of
+    Return:
+        list of int representing the shape of the tensor.
+    """
+    static_shape = tensor.shape.as_list()
+    dynamic_shape = tf.unstack(tf.shape(tensor))
+    dims = [s[1] if s[0] is None else s[0]
+            for s in zip(static_shape, dynamic_shape)]
+    return dims
