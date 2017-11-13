@@ -36,9 +36,9 @@ def dispersion(inputs,
                reuse=None):
     output_list = []
 
-    with tf.variable_scope(scope):
+    with tf.variable_scope(scope, resuse=reuse):
         for i in range(output_length):
-            output_list.append(aggregation(inputs, scope="aggr_{}".format(i), reuse=reuse))
+            output_list.append(aggregation(inputs, output_depth=output_depth, scope="aggr_{}".format(i)))
             outputs = tf.concat(output_list, axis=-2)
         
     return outputs
