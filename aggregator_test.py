@@ -35,7 +35,7 @@ def train(src_path,
     train_op, global_step = create_train_op(mean_loss)
 
     print("Starting training...")
-    sv = tf.train.Supervisor(logdir=logdir, save_model_secs=900, init_fn=lambda sess: sess.run(queue_init))
+    sv = tf.train.Supervisor(logdir=logdir, save_model_secs=900, local_init_op=tf.group(queue_init, tf.tables_initializer())) #init_fn=lambda sess: sess.run(queue_init))
 
     fetches = [x, y, preds, global_step, mean_loss, train_op]
     fetch_keys = ['x', 'y', 'preds', 'global_step', 'mean_loss', 'train_op']
@@ -44,7 +44,7 @@ def train(src_path,
         while not sv.should_stop():
             fetch_results = sess.run(fetches)
             fetch_dict = dict(zip(fetch_keys, fetch_results))
-            if fetch_dict['global_step'] % 2 == 0:
+            if fetch_dict['global_step'] % 200 == 0:
                 print("=============================================================")
                 print("step {}, total loss: {}".format(fetch_dict['global_step'], fetch_dict['mean_loss']))
                 print("=============================================================")
