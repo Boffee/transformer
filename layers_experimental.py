@@ -76,6 +76,7 @@ def aggregation_layer(inputs,
 
     return outputs
 
+
 def dispersion_layer(inputs,
                      output_depth=512,
                      dispersion_input_length=3,

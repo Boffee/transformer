@@ -15,8 +15,7 @@ def compute_accuracy(y, preds, valid_tgt_pos):
 def get_valid_pos(ids):
     return tf.to_float(tf.not_equal(ids, 0))
 
-def train(mean_loss, learning_rate=0.0001, train_vars=None, max_gradient_norm=None):
-
+def create_train_op(mean_loss, learning_rate=0.0001, train_vars=None, max_gradient_norm=None):
     if not train_vars:
         train_vars = tf.trainable_variables()
         
