@@ -1,7 +1,7 @@
 import tensorflow as tf
 from utils import *
 
-def positional_encoding(max_time_step, encoding_size=512):
+def positional_encoding(max_time_step, encoding_depth=512):
     """
     Positional encoding in https://arxiv.org/pdf/1706.03762.pdf
     Each dimension in the encoding represents a sinusoidal progression of different wavelength
@@ -12,32 +12,32 @@ def positional_encoding(max_time_step, encoding_size=512):
     relative position ranges respective.
     Args:
         max_time_step: int, max length of input sequence
-        encoding_size: int, output encoding size
+        encoding_depth: int, output encoding size
     Returns:
-        tensor of shape (batch_size, encoding_size)
+        tensor of shape (batch_size, encoding_depth)
     """
     with tf.variable_scope("positional_encoding"):
-        pos = tf.expand_dims(tf.range(max_time_step), 0)
-        i = tf.expand_dims(tf.range(encoding_size), 1)
-        radians = tf.matmul(pos, 10000**(i/encoding_size))
-        pe = tf.where(tf.equal(i%2, 0), tf.sin(radians), tf.cos(radians))
+        pos = tf.expand_dims(tf.range(max_time_step, dtype=tf.float32), 1)
+        i = tf.expand_dims(tf.range(encoding_depth, dtype=tf.float32), 0)
+        radians = tf.matmul(pos, 10000**(i/encoding_depth))
+        pe = tf.where(tf.equal(tf.tile(i%2, [max_time_step,1]), 0), tf.sin(radians), tf.cos(radians))
     return pe
 
 
-def embedding(sequences, vocab_size, embed_size=512):
+def embedding(sequences, vocab_size, embedding_depth=512):
     """
     Map the index representation of sequences into a dense vector space.
     Args:
         sequences: int tensor of shape (batch_size, max_time_step) mapped from token to index to embed.
         vocab_size: int, embedding lookup size. Number of unique tokens that needs to be embedded.
-        embed_size: int, output embedding space size.
+        embedding_depth: int, output embedding space size.
     Returns:
-        tensor of shape (batch_size, max_time_step, embed_size)
+        tensor of shape (batch_size, max_time_step, embedding_depth)
     """
     with tf.variable_scope("embedding"):
-        embedding_kernel = tf.get_variable("kernel", shape=[vocab_size, embed_size])
-        sequences_embedded = tf.gather(embedding_kernel, sequences)
-    return sequences
+        embedding_kernel = tf.get_variable("kernel", shape=[vocab_size, embedding_depth])
+        embedded = tf.gather(embedding_kernel, sequences)
+    return embedded
 
 def feedforward(inputs,
                 hidden_depth=2048,
@@ -57,7 +57,7 @@ def feedforward(inputs,
         use_residual: Boolean, whether to use residual connection between the outputs and the queries.
         use_layer_norm: Boolean, whether to layer normalize the outputs.
     Returns:
-
+        tensor of shape (batch_size, len(double 1D-conv output), output_depth)
     """
     intermediates = tf.layers.conv1d(inputs, hidden_depth, strides=strides, kernel_size=kernel_size, padding=padding, activation=tf.nn.relu)
     outputs = tf.layers.conv1d(intermediates, output_depth, strides=strides, kernel_size=kernel_size, padding=padding)
@@ -70,11 +70,11 @@ def feedforward(inputs,
 
     return outputs
 
+
 def multihead_attention(queries,
                         keys,
                         values,
                         biases=None,
-                        masking_range=(1, None),
                         attention_depth=512,
                         num_heads=8,
                         num_devs=1,
@@ -102,12 +102,13 @@ def multihead_attention(queries,
     """
     with tf.variable_scope("multihead_attention"):
         queries_partitions = tf.split(queries, num_heads, axis=-1)
+        keys_partitions = tf.split(keys, num_heads, axis=-1)
         values_partitions = tf.split(values, num_heads, axis=-1)
 
         attention_heads = []
-        for index, (queries_partition, values_partition) in enumerate(zip(queries_partitions, values_partitions)):
+        for index, (queries_partition, keys_partition, values_partition) in enumerate(zip(queries_partitions, keys_partitions, values_partitions)):
             with tf.device("/gpu:{}".format(index%num_devs)):
-                attention_head = single_attention_head(queries_partition, values_partition, masking_range, attention_depth/num_heads)
+                attention_head = single_attention_head(queries_partition, keys_partition, values_partition, attention_depth/num_heads, biases=biases)
                 attention_heads.append(attention_head)
         
         attentions = tf.concat(attention_heads, axis=-1)
@@ -162,6 +163,7 @@ def scaled_dot_product_attention(queries,
     """
     assert get_shape(queries)[-1] == get_shape(keys)[-1]
     assert get_shape(biases)[-2:] == [get_shape(queries)[-2], get_shape(keys)[-2]]
+
     with tf.variable_scope("scaled_dot_product_attention"):
         logits = tf.matmul(queries, keys, transpose_b=True)
         logits /= tf.to_float(get_shape(logits)[-1])**0.5
@@ -174,9 +176,9 @@ def scaled_dot_product_attention(queries,
     return outputs
 
 
-def attention_mask(masking_range,
-                   queries_length,
-                   keys_length):
+def attention_neighbor_mask(masking_range,
+                            queries_length,
+                            keys_length):
     """
     Create a binary mask, where masked=1 and unmasked=0, with the specified range relative to the
     position of each query.
@@ -211,6 +213,27 @@ def attention_mask(masking_range,
 
     return mask
 
+def attention_padding_mask(queries, keys, subtensor_axes=None):
+    """
+    Create a binary mask, where masked=1 and unmasked=0, that masks the paddings in the queries and keys
+    from the attention.
+    Args:
+        queries: tensor of shape (batch_size, queries_length, query_depth) containing the queries for memories.
+        keys: tensor of shape (batch_size, keys_length, key_depth) containing the keys to the memories.
+        subtensor_axes: list of int representing the axes of the subtensors to mask.
+    Returns:
+        tensor of shape (batch_size, queries_length, keys_length)
+    """
+    if subtensor_axes:
+        queries_mask = tf.sign(tf.reduce_sum(abs(queries), axis=subtensor_axes))
+        keys_mask = tf.sign(tf.reduce_sum(abs(keys), axis=subtensor_axes))
+    else:
+        queries_mask = tf.sign(queries)
+        keys_mask = tf.sign(keys)
+    
+    mask = tf.matmul(tf.expand_dims(queries_mask, [1]), tf.expand_dims(keys_mask, [2]))
+    return mask
+
 
 def layer_normalization(inputs,
                         subtensor_axes=[-1],
@@ -220,18 +243,21 @@ def layer_normalization(inputs,
     normalize the inputs by re-centering and re-scaling each subtensor defined by subtensor axes by the mean
     and standard deviation of the values in the subtensor. Since layer normalization does not need to normalize 
     against a batch, it is suitable for sequence models where the length of the input is not fixed and for
-    large models which cannot use sufficiently large batches.tensor unit in the specified subspace
+    large models which cannot use sufficiently large batches.
     Args:
         inputs: tensor with rank >= 2 and shape (batch_size, ...).
         subtensor_axes: list of int representing the axes of the subtensor.
     Returns:
         tensor of the same shape as inputs.
     """
+    inputs_shape = get_shape(inputs)
+    assert len(inputs_shape) >= 2
+    assert len(inputs_shape) > max(subtensor_axes)
+
     with tf.variable_scope("layer_normalization"):
-        mean = tf.reduce_mean(inputs, axis=subtensor_axes, keep_dim=True)
-        variance = tf.reduce_mean((inputs-mean)**2, axis=subtensor_axes, keep_dim=True)
+        mean = tf.reduce_mean(inputs, axis=subtensor_axes, keep_dims=True)
+        variance = tf.reduce_mean((inputs-mean)**2, axis=subtensor_axes, keep_dims=True)
         
-        inputs_shape = tf.get_shape(inputs)
         subtensor_shape = [inputs_shape[i] if i in subtensor_axes else 1 for i in range(len(inputs_shape))]
         bias = tf.get_variable("bias", shape=subtensor_shape)
         gain = tf.get_variable("gain", shape=subtensor_shape)
@@ -239,6 +265,7 @@ def layer_normalization(inputs,
         normalized = (1+gain) * (inputs-mean) / (variance+epsilon)**0.5 + bias
 
     return normalized
+
 
 def residual_connection(current_states, previous_states, project=False):
     """
@@ -260,33 +287,33 @@ def residual_connection(current_states, previous_states, project=False):
         return current_states + tf.layers.dense(previous_states, get_shape(current_states)[-1])
     
 
-def lower_matrix(inputs, diag_offset):
+def lower_matrix(inputs, matrix_diag_offset):
     """
     Take the matrices represented by the last 2 dimensions of the input and preserve only the values below the
-    offsetted diagonal.
+    offsetted matrix_diagonal.
     Args:
         inputs: tensor with rank >= 2
-        diag_offset: int, positional offset from the center diagonal
+        matrix_diag_offset: int, positional offset from the center matrix_diagonal
     Returns:
         tensor of same shape as inputs
     """
-    outputs = tf.matrix_band_part(input, -1, diag_offset)
-    if diag_offset < 0:
-        outputs -= tf.matrix_band_part(inputs, -diag_offset-1, -1)
+    outputs = tf.matrix_band_part(input, -1, matrix_diag_offset)
+    if matrix_diag_offset < 0:
+        outputs -= tf.matrix_band_part(inputs, -matrix_diag_offset-1, -1)
     return outputs
 
 
-def upper_matrix(inputs, diag_offset):
+def upper_matrix(inputs, matrix_diag_offset):
     """
     Take the matrices represented by the last 2 dimensions of the input and preserve only the values above the
-    offsetted diagonal.
+    offsetted matrix_diagonal.
     Args:
         inputs: tensor with rank >= 2
-        diag_offset: int, positional offset from the center diagonal
+        matrix_diag_offset: int, positional offset from the center matrix_diagonal
     Returns:
         tensor of same shape as inputs
     """
-    outputs = tf.matrix_band_part(input, -diag_offset, -1)
-    if diag_offset > 0:
-        outputs -= tf.matrix_band_part(inputs, -1, diag_offset-1)
+    outputs = tf.matrix_band_part(input, -matrix_diag_offset, -1)
+    if matrix_diag_offset > 0:
+        outputs -= tf.matrix_band_part(inputs, -1, matrix_diag_offset-1)
     return outputs
